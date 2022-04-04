@@ -105,6 +105,11 @@ add_definitions(/DLOADFILE_CACHE) #SQF VM fileio.cpp cache
 
 
 add_executable("ArmaScriptCompiler" ${SOURCES_ASC} ${SOURCES_SQFVM} ${SOURCES_ASC_OPT} "${LIBRARY_PATH_LZO}/lzokay.cpp")
+if(MSVC)
+	set_target_properties("ArmaScriptCompiler" PROPERTIES
+		LINK_FLAGS /SUBSYSTEM:CONSOLE
+	)
+endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${INCLUDE_PATH_ZSTD} ${LIBRARY_PATH_B64} ${INCLUDE_PATH_SQFVM} ${LIBRARY_PATH_LZO} ${LIBRARY_PATH_JSON}) # ${INCLUDE_PATH_ZSTD} ${INCLUDE_PATH_SQFVM}
 

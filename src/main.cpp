@@ -23,7 +23,7 @@ std::mutex taskMutex;
 bool threadsShouldRun = true;
 std::filesystem::path outputDir;
 
-void compileRecursive(std::filesystem::path inputDir) {
+void collectFiles(std::filesystem::path inputDir) {
 
     const std::filesystem::path ignoreGit(".git");
     const std::filesystem::path ignoreSvn(".svn");
@@ -56,7 +56,11 @@ void processFile(ScriptCompiler& comp, std::filesystem::path path) {
 
         auto outputPath = outputDir / pathRelative.parent_path() / (path.stem().string() + ".sqfc");
 
-        if (std::filesystem::exists(outputPath)) return;
+        if (std::filesystem::exists(outputPath)
+            && (std::filesystem::last_write_time(path) < std::filesystem::last_write_time(outputPath))) {
+            //std::cout << outputPath.generic_string() << " is not modified\n";
+            return;
+        } 
 
 
         std::error_code ec;
@@ -89,9 +93,10 @@ void processFile(ScriptCompiler& comp, std::filesystem::path path) {
         //ScriptSerializer::compiledToHumanReadable(compiledData, output2);
         //output2.flush();
     } catch (std::domain_error& err) {
-
+        std::cerr << err.what();
     }
     catch (std::runtime_error& err) {
+        std::cerr << err.what();
 
     }
 
@@ -142,63 +147,95 @@ int main(int argc, char* argv[]) {
     for (std::string &includePath : json["includePaths"].get<std::vector<std::string>>()) {
         includePaths.push_back(std::filesystem::path(includePath));
     }
+    
+    for (std::filesystem::path& inputDir : inputDirs) {
+        if (std::filesystem::exists(inputDir)) {
+            collectFiles(inputDir);
+        }
+        else 
+        {
+            std::cerr << "[ERR] " << inputDir << " not found\n";
+        }
+    }
+    //collectFiles("I:/ACE3/addons");
+    //collectFiles("I:/CBA_A3/addons");
+    //collectFiles("T:/x/");
+    //collectFiles("T:/z/ace/");
+    //collectFiles("T:/z/acex/");
+    //collectFiles("T:/a3");
+
+    //collectFiles("P:/test/");
 
     outputDir = std::filesystem::path(json["outputDir"].get<std::string>());
     int numberOfWorkerThreads = json["workerThreads"].get<int>();
 
-    std::mutex workWait;
-    workWait.lock();
-    auto workerFunc = [&]() {
-        ScriptCompiler compiler(includePaths);
+    if (numberOfWorkerThreads > 1) {
+
+
+        std::mutex workWait;
         workWait.lock();
+        auto workerFunc = [&]() {
+            ScriptCompiler compiler(includePaths);
+            workWait.lock();
+            workWait.unlock();
+
+            while (threadsShouldRun) {
+                std::unique_lock<std::mutex> lock(taskMutex);
+                if (tasks.empty()) return;
+                const auto task(std::move(tasks.front()));
+                tasks.pop();
+                if (tasks.empty())
+                    threadsShouldRun = false;
+                lock.unlock();
+
+
+                auto foundExclude = std::find_if(excludeList.begin(), excludeList.end(), [&task](const std::string& excludeItem)
+                    {
+                        auto taskString = task.string();
+                        std::transform(taskString.begin(), taskString.end(), taskString.begin(), ::tolower);
+                        return taskString.find(excludeItem) != std::string::npos;
+                    });
+
+                if (foundExclude == excludeList.end())
+                    processFile(compiler, task);
+            }
+
+        };
+
+
+
         workWait.unlock();
 
-        while (threadsShouldRun) {
-            std::unique_lock<std::mutex> lock(taskMutex);
-            if (tasks.empty()) return;
-            const auto task(std::move(tasks.front()));
-            tasks.pop();
-            if (tasks.empty())
-                threadsShouldRun = false;
-            lock.unlock();
+        std::vector<std::thread> workerThreads;
+        for (int i = 0; i < numberOfWorkerThreads; i++) {
+            workerThreads.push_back(std::thread(workerFunc));
+        }
 
+        workerFunc();
+
+        for (std::thread& thread : workerThreads) {
+            thread.join();
+        }
+    }
+    else 
+    {
+        ScriptCompiler compiler(includePaths);
+
+        while (!tasks.empty()) {
+            auto task = tasks.front();
 
             auto foundExclude = std::find_if(excludeList.begin(), excludeList.end(), [&task](const std::string& excludeItem)
-            {
-                auto taskString = task.string();
-                std::transform(taskString.begin(), taskString.end(), taskString.begin(), ::tolower);
-                return taskString.find(excludeItem) != std::string::npos;
-            });
+                {
+                    auto taskString = task.string();
+                    std::transform(taskString.begin(), taskString.end(), taskString.begin(), ::tolower);
+                    return taskString.find(excludeItem) != std::string::npos;
+                });
 
             if (foundExclude == excludeList.end())
                 processFile(compiler, task);
+            
+            tasks.pop();
         }
-
-    };
-
-    //compileRecursive("I:/ACE3/addons");
-    //compileRecursive("I:/CBA_A3/addons");
-    //compileRecursive("T:/x/");
-    //compileRecursive("T:/z/ace/");
-    //compileRecursive("T:/z/acex/");
-    //compileRecursive("T:/a3");
-
-    //compileRecursive("P:/test/");
-    for (std::filesystem::path &inputDir : inputDirs) {
-        compileRecursive(inputDir);
-    }
-
-    workWait.unlock();
-
-    std::vector<std::thread> workerThreads;
-    for (int i = 0; i < numberOfWorkerThreads; i++) {
-        workerThreads.push_back(std::thread(workerFunc));
-    }
-
-    workerFunc();
-
-    for (std::thread &thread : workerThreads) {
-        thread.join();
     }
 
     /*
